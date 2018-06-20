@@ -24,6 +24,7 @@ namespace TransmissionMetrics
 
         private static async Task Run()
         {
+            Console.Write("password: ");
             SecureString ss = new SecureString();
             ConsoleKeyInfo key;
             while ((key = Console.ReadKey(true)).Key != ConsoleKey.Enter)
@@ -34,37 +35,57 @@ namespace TransmissionMetrics
             
 
             Random random = new Random();
+            var getMetrics = MakeMetricsFunc();
 
             while (true)
             {
-                var point = await GetMetrics(client);
+                var point = await getMetrics(client);
                 await influxClient.Client.WriteAsync(point, "Transmission");
                 await Task.Delay(TimeSpan.FromMinutes(1));
             }
         }
 
-        private static async Task<Point> GetMetrics(Client client)
+        private static Func<Client, Task<Point>> MakeMetricsFunc()
         {
-            var torrents = client.TorrentGetAsync(TorrentFields.Status);
-            var space = client.GetFreeSpaceAsync();
-            var sessionInfo = client.GetSessionStats();
+            DateTime previousRun = DateTime.Now;
+            ulong previousDownloaded = 0;
+            ulong previousUploaded = 0;
 
-            await Task.WhenAll(torrents, space, sessionInfo);
-
-            var groups = torrents.Result.GroupBy(t => t.Status);
-
-            return new Point
+            (double Down, double Up) Speed(Stats session)
             {
-                Name = "torrents",
-                Fields = new Dictionary<string, object>
+                DateTime now = DateTime.Now;
+                double down = (previousDownloaded < 1 ? (double)session.DownloadSpeed : (session.AllTimeStats.DownloadedBytes - previousDownloaded) / (now - previousRun).TotalSeconds) / 1024 / 1024;
+                double up = (previousUploaded < 1 ? (double)session.UploadSpeed : (session.AllTimeStats.UploadedBytes - previousUploaded) / (now - previousRun).TotalSeconds) / 1024 / 1024;
+                previousRun = now;
+                previousDownloaded = session.AllTimeStats.DownloadedBytes;
+                previousUploaded = session.AllTimeStats.UploadedBytes;
+                return (down, up);
+            }
+
+            return async client =>
+            {
+                var torrents = client.TorrentGetAsync(TorrentFields.Status);
+                var space = client.GetFreeSpaceAsync();
+                var sessionInfo = client.GetSessionStats();
+
+                await Task.WhenAll(torrents, space, sessionInfo);
+
+                var groups = torrents.Result.GroupBy(t => t.Status);
+                (var down, var up) = Speed(sessionInfo.Result);
+
+                return new Point
                 {
-                    ["Space"] = space.Result.Size / 1024d / 1024 / 1024,
-                    ["Seeding"] = groups.Single(g => g.Key == Status.Seed).Count(),
-                    ["Downloading"] = groups.Single(g => g.Key == Status.Download).Count(),
-                    ["Paused"] = groups.Single(g => g.Key == Status.Stopped).Count(),
-                    ["Downspeed"] = sessionInfo.Result.DownloadSpeed / 1024d / 1024,
-                    ["Upspeed"] = sessionInfo.Result.UploadSpeed / 1024d / 1024,
-                },
+                    Name = "torrents",
+                    Fields = new Dictionary<string, object>
+                    {
+                        ["Space"] = (double)space.Result.Size / 1024 / 1024 / 1024,
+                        ["Seeding"] = groups.Single(g => g.Key == Status.Seed).Count(),
+                        ["Downloading"] = groups.Single(g => g.Key == Status.Download).Count(),
+                        ["Paused"] = groups.Single(g => g.Key == Status.Stopped).Count(),
+                        ["Downspeed"] = down,
+                        ["Upspeed"] = up,
+                    },
+                };
             };
         }
     }
