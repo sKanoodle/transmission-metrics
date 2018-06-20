@@ -33,56 +33,39 @@ namespace TransmissionMetrics
             }
             
 
-
             Random random = new Random();
 
             while (true)
             {
-                //var point = new Point
-                //{
-                //    Name = "torrents",
-                //    Fields = new Dictionary<string, object>
-                //    {
-                //        ["Space"] = 12 + random.Next(2),
-                //        ["Seeding"] = 24 + random.Next(1),
-                //        ["Downloading"] = 46 + random.Next(1),
-                //        ["Paused"] = 64,
-                //        ["Downspeed"] = random.Next(24),
-                //        ["Upspeed"] = random.Next(24),
-                //    }
-                //};
-
                 var point = await GetMetrics(client);
-                //await influxClient.Client.WriteAsync(point, "Transmission");
+                await influxClient.Client.WriteAsync(point, "Transmission");
                 await Task.Delay(TimeSpan.FromMinutes(1));
             }
         }
 
         private static async Task<Point> GetMetrics(Client client)
         {
-            var foo = client.SimpleGETAsync();
+            var torrents = client.TorrentGetAsync(TorrentFields.Status);
+            var space = client.GetFreeSpaceAsync();
+            var sessionInfo = client.GetSessionStats();
 
-            var torrents = await client.TorrentGetAsync(TorrentFields.Status);
-            var space = await client.GetFreeSpaceAsync();
-            var sessionInfo = await client.GetSessionStats();
-            return null;
-            //await Task.WhenAll(torrents, space, sessionInfo);
+            await Task.WhenAll(torrents, space, sessionInfo);
 
-            //var groups = torrents.Result.GroupBy(t => t.Status);
+            var groups = torrents.Result.GroupBy(t => t.Status);
 
-            //return new Point
-            //{
-            //    Name = "torrents",
-            //    Fields = new Dictionary<string, object>
-            //    {
-            //        ["Space"] = space.Result.Size / 1024d / 1024 / 1024,
-            //        ["Seeding"] = groups.Single(g => g.Key == Status.Seed).Count(),
-            //        ["Downloading"] = groups.Single(g => g.Key == Status.Download).Count(),
-            //        ["Paused"] = groups.Single(g => g.Key == Status.Stopped).Count(),
-            //        ["Downspeed"] = sessionInfo.Result.DownloadSpeed / 1024d / 1024,
-            //        ["Upspeed"] = sessionInfo.Result.UploadSpeed / 1024d / 1024,
-            //    },
-            //};
+            return new Point
+            {
+                Name = "torrents",
+                Fields = new Dictionary<string, object>
+                {
+                    ["Space"] = space.Result.Size / 1024d / 1024 / 1024,
+                    ["Seeding"] = groups.Single(g => g.Key == Status.Seed).Count(),
+                    ["Downloading"] = groups.Single(g => g.Key == Status.Download).Count(),
+                    ["Paused"] = groups.Single(g => g.Key == Status.Stopped).Count(),
+                    ["Downspeed"] = sessionInfo.Result.DownloadSpeed / 1024d / 1024,
+                    ["Upspeed"] = sessionInfo.Result.UploadSpeed / 1024d / 1024,
+                },
+            };
         }
     }
 }
